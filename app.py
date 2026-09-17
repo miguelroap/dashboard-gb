@@ -1,9 +1,9 @@
 """
-Dashboard GB — Ingresos por activo en Gran Bretaña
-Lee los parquet publicados por gb_publish.py en gs://miguel-energia-gb-dashboard/gb/
+Dashboard GB — Revenue by asset in Great Britain / Ingresos por activo en Gran Bretaña
+Reads the parquet files published by gb_publish.py at gs://miguel-energia-gb-dashboard/gb/
 
-Local:   streamlit run app.py        (usa tus credenciales de gcloud si no hay secrets.toml)
-Cloud:   Streamlit Community Cloud con [gcp_service_account] en Secrets
+Local:  streamlit run app.py        (uses your gcloud credentials if there is no secrets.toml)
+Cloud:  Streamlit Community Cloud with [gcp_service_account] in Secrets
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-# Red corporativa con inspección SSL (solo local): usar certificados de Windows si está truststore
+# Corporate network with SSL inspection (local only): use the Windows certificate store if truststore is present
 try:
     import truststore
 
@@ -25,27 +25,181 @@ try:
 except Exception:  # noqa: BLE001
     pass
 
-st.set_page_config(page_title="Ingresos por activo en Gran Bretaña", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="GB asset revenue", page_icon="⚡", layout="wide")
 
 DEFAULT_BUCKET = "miguel-energia-gb-dashboard"
 PREFIX = "gb"
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Identidad visual: cada capa de ingreso tiene un color fijo en toda la app
+# Language
+# ──────────────────────────────────────────────────────────────────────────────
+LANGS = {"English": "en", "Español": "es"}
+
+if "lang" not in st.session_state:
+    st.session_state["lang"] = "en"
+
+T = {
+    "app_title": {"en": "Revenue by asset in Great Britain", "es": "Ingresos por activo en Gran Bretaña"},
+    "app_sub": {
+        "en": "{a} to {b}. Five revenue sources per unit: wholesale, balancing, frequency, reserve and capacity.",
+        "es": "{a} a {b}. Cinco fuentes de ingreso por unidad: mercado, balance, frecuencia, reservas y capacidad.",
+    },
+    "sidebar_period": {"en": "Period", "es": "Periodo"},
+    "sidebar_months": {"en": "Months", "es": "Meses"},
+    "sidebar_caption_data": {
+        "en": "Data from {a} to {b}. Published {t} UTC.",
+        "es": "Datos del {a} al {b}. Publicado {t} UTC.",
+    },
+    "sidebar_caption_method": {
+        "en": "Wholesale is an estimate (physical programme × market price). Balancing and NESO services are "
+        "published data. Capacity is the obligation × auction price, without indexation.",
+        "es": "Mercado es una estimación (programa físico × precio de mercado). Balance y servicios de NESO son "
+        "datos publicados. Capacidad es la obligación × precio de subasta, sin indexación.",
+    },
+    "tab_assets": {"en": "Econergy assets", "es": "Activos Econergy"},
+    "tab_bess": {"en": "Battery comparison", "es": "Comparativa de baterías"},
+    "tab_units": {"en": "Search a unit", "es": "Buscar unidad"},
+    "tab_market": {"en": "Market", "es": "Mercado"},
+    "layer_wholesale": {"en": "Wholesale", "es": "Mercado"},
+    "layer_balancing": {"en": "Balancing", "es": "Balance"},
+    "layer_frequency": {"en": "Frequency", "es": "Frecuencia"},
+    "layer_reserve": {"en": "Reserve", "es": "Reservas"},
+    "layer_capacity": {"en": "Capacity", "es": "Capacidad"},
+    "total": {"en": "Total", "es": "Total"},
+    "asset_select": {"en": "Asset", "es": "Activo"},
+    "asset_none": {
+        "en": "No asset in the asset map has data for this period. Widen the period or check gb_asset_map.csv.",
+        "es": "Ningún activo de la tabla de activos tiene datos en este periodo. Amplía el periodo o revisa gb_asset_map.csv.",
+    },
+    "per_mw_month": {"en": "per MW per month", "es": "por MW al mes"},
+    "fact_period_revenue": {"en": "Revenue for the period", "es": "Ingreso del periodo"},
+    "fact_rank": {"en": "Rank", "es": "Posición"},
+    "fact_rank_val": {
+        "en": "{r} of {n} batteries of 10 MW or more",
+        "es": "{r} de {n} baterías de 10 MW o más",
+    },
+    "fact_spv": {"en": "SPV", "es": "Sociedad"},
+    "fact_units": {"en": "Elexon / NESO unit", "es": "Unidad Elexon / NESO"},
+    "fact_lead_party": {"en": "Elexon lead party", "es": "Lead party Elexon"},
+    "fact_eac_participant": {"en": "NESO services operator", "es": "Operador en servicios NESO"},
+    "fact_capacity": {"en": "Capacity", "es": "Capacidad"},
+    "fact_cm_contracts": {"en": "Capacity Market contracts", "es": "Contratos de capacidad"},
+    "toggle_per_mw": {"en": "Show per MW", "es": "Ver por MW"},
+    "axis_gbp_per_mw": {"en": "£ per MW", "es": "£ por MW"},
+    "axis_gbp": {"en": "£", "es": "£"},
+    "day_by_day": {"en": "Day by day", "es": "Día a día"},
+    "daily_missing": {"en": "No daily data available: {e}", "es": "No hay datos diarios disponibles: {e}"},
+    "day_operation": {"en": "Operation on a day", "es": "Operación en un día"},
+    "day_slider": {"en": "Day", "es": "Día"},
+    "chart_energy_hh": {"en": "Energy per half hour (MWh)", "es": "Energía por media hora (MWh)"},
+    "chart_neso_mw": {"en": "NESO services awarded (MW)", "es": "Servicios de NESO adjudicados (MW)"},
+    "series_programme": {"en": "Programme (+export / −import)", "es": "Programa (+descarga / −carga)"},
+    "series_bm_up": {"en": "Balancing: up", "es": "Balance: subir"},
+    "series_bm_down": {"en": "Balancing: down", "es": "Balance: bajar"},
+    "axis_sp": {"en": "Settlement period", "es": "Periodo de liquidación"},
+    "day_summary": {
+        "en": "Revenue for the day: {t}. Average imbalance price: £{p}/MWh.",
+        "es": "Ingreso del día: {t}. Precio de desvío medio: £{p}/MWh.",
+    },
+    "sp_missing": {"en": "No half-hourly detail available: {e}", "es": "No hay detalle por periodo disponible: {e}"},
+    "portfolio_title": {"en": "Portfolio in Great Britain", "es": "Cartera en Gran Bretaña"},
+    "col_project": {"en": "Project", "es": "Proyecto"},
+    "col_spv": {"en": "SPV", "es": "Sociedad"},
+    "col_status": {"en": "Status", "es": "Estado"},
+    "col_cm": {"en": "Capacity contracts", "es": "Contratos de capacidad"},
+    "col_neso_unit": {"en": "NESO unit", "es": "Unidad NESO"},
+    "col_elexon_unit": {"en": "Elexon unit", "es": "Unidad Elexon"},
+    "col_notes": {"en": "Notes", "es": "Notas"},
+    "filter_min_mw": {"en": "Minimum capacity (MW)", "es": "Capacidad mínima (MW)"},
+    "filter_top_n": {"en": "Show top", "es": "Mostrar las mejores"},
+    "filter_only_bess": {"en": "Batteries only", "es": "Solo baterías"},
+    "chart_gbp_per_mw_month": {"en": "Revenue per MW per month ({n} units)", "es": "Ingreso por MW al mes ({n} unidades)"},
+    "caption_bold": {
+        "en": "Assets from the asset map are shown in bold. If not among the top, they are appended at the end.",
+        "es": "En negrita, activos de la tabla de activos. Si no están entre las mejores, se añaden al final.",
+    },
+    "col_unit": {"en": "Unit", "es": "Unidad"},
+    "col_lead_party": {"en": "Lead party", "es": "Lead party"},
+    "col_mw": {"en": "MW", "es": "MW"},
+    "col_kgbp_mw_month": {"en": "£k/MW/month", "es": "£k/MW/mes"},
+    "col_total_gbp": {"en": "Total £", "es": "Total £"},
+    "download_comparison": {"en": "Download comparison (CSV)", "es": "Descargar comparativa (CSV)"},
+    "search_placeholder": {"en": "e.g. Pillswood, Statkraft, T_SGRWO", "es": "p. ej. Pillswood, Statkraft, T_SGRWO"},
+    "search_label": {"en": "Search by name, owner or code", "es": "Buscar por nombre, titular o código"},
+    "search_none": {
+        "en": "No unit matches the search for this period. Try part of the name or code.",
+        "es": "Ninguna unidad coincide con la búsqueda en este periodo. Prueba con parte del nombre o del código.",
+    },
+    "unit_select": {"en": "Unit", "es": "Unidad"},
+    "metric_revenue": {"en": "Revenue for the period", "es": "Ingreso del periodo"},
+    "metric_kgbp_mw": {"en": "£ thousand per MW per month", "es": "£ miles por MW al mes"},
+    "metric_export": {"en": "Exported (MWh)", "es": "Exportado (MWh)"},
+    "metric_import": {"en": "Imported (MWh)", "es": "Importado (MWh)"},
+    "unit_caption": {
+        "en": "Lead party: {lp}. Technology: {ft}. Capacity: {mw} MW.",
+        "es": "Lead party: {lp}. Tecnología: {ft}. Capacidad: {mw} MW.",
+    },
+    "download_months": {"en": "Download months (CSV)", "es": "Descargar meses (CSV)"},
+    "market_prices": {"en": "Daily prices", "es": "Precios diarios"},
+    "market_band": {"en": "Imbalance: daily range", "es": "Desvío: rango del día"},
+    "market_avg": {"en": "Imbalance: average", "es": "Desvío: media"},
+    "market_mid": {"en": "Wholesale (MID)", "es": "Mercado (MID)"},
+    "axis_gbp_mwh": {"en": "£/MWh", "es": "£/MWh"},
+    "market_payments": {"en": "Daily payments by the system operator", "es": "Pagos diarios del operador"},
+    "series_freq_reserve": {"en": "Frequency and reserve", "es": "Frecuencia y reservas"},
+    "market_caption": {
+        "en": "Elexon-registered units only. Aggregated units that only sell services to NESO are not included.",
+        "es": "Solo unidades registradas en Elexon. Las unidades agregadas que solo venden servicios a NESO no están incluidas.",
+    },
+    "eac_price_title": {"en": "NESO service prices", "es": "Precio de los servicios de NESO"},
+    "eac_products": {"en": "Products", "es": "Productos"},
+    "axis_gbp_mw_h": {"en": "£ per MW and hour", "es": "£ por MW y hora"},
+    "eac_caption": {
+        "en": "Weighted average price by awarded MW. D = dynamic (C containment, M moderation, R regulation; "
+        "H raise, L lower). BR, QR, SR = balancing, quick and slow reserve (P raise, N lower).",
+        "es": "Precio medio ponderado por MW adjudicados. D = dinámicos (C contención, M moderación, R "
+        "regulación; H subir, L bajar). BR, QR, SR = reservas de balance, rápida y lenta (P subir, N bajar).",
+    },
+    "market_missing": {"en": "No market data available: {e}", "es": "No hay datos de mercado disponibles: {e}"},
+    "load_error": {
+        "en": "Could not read the dashboard data. Check that gb_publish.py has run and that the credentials "
+        "have access to the bucket. Detail: {e}",
+        "es": "No se han podido leer los datos del dashboard. Comprueba que gb_publish.py se ha ejecutado y que "
+        "las credenciales tienen acceso al bucket. Detalle: {e}",
+    },
+}
+
+
+def tr(key: str, **kwargs) -> str:
+    s = T.get(key, {}).get(st.session_state["lang"], key)
+    return s.format(**kwargs) if kwargs else s
+
+
+MESES = {
+    "en": ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
+    "es": ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"],
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Visual identity: each revenue layer keeps a fixed colour across the whole app
 # ──────────────────────────────────────────────────────────────────────────────
 INK = "#14212E"
 MUTED = "#5E6B78"
 RULE = "#D3DAE1"
 PAGE = "#EEF2F5"
-LAYERS = [
-    ("WHOLESALE_GBP", "Mercado", "#6F8FAF"),
-    ("BM_GBP", "Balance", "#E3A21A"),
-    ("RESPONSE_GBP", "Frecuencia", "#1F9E89"),
-    ("RESERVE_GBP", "Reservas", "#6C5BB5"),
-    ("CAPACITY_GBP", "Capacidad", "#B5424F"),
-]
-LAYER_COLS = [c for c, _, _ in LAYERS]
-MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+
+
+def layers():
+    return [
+        ("WHOLESALE_GBP", tr("layer_wholesale"), "#6F8FAF"),
+        ("BM_GBP", tr("layer_balancing"), "#E3A21A"),
+        ("RESPONSE_GBP", tr("layer_frequency"), "#1F9E89"),
+        ("RESERVE_GBP", tr("layer_reserve"), "#6C5BB5"),
+        ("CAPACITY_GBP", tr("layer_capacity"), "#B5424F"),
+    ]
+
+
+LAYER_COLS = ["WHOLESALE_GBP", "BM_GBP", "RESPONSE_GBP", "RESERVE_GBP", "CAPACITY_GBP"]
 
 st.markdown(
     f"""
@@ -79,7 +233,7 @@ section[data-testid="stSidebar"] {{ background: #FFFFFF; border-right: 1px solid
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Datos
+# Data
 # ──────────────────────────────────────────────────────────────────────────────
 def _secrets() -> dict:
     try:
@@ -104,7 +258,7 @@ def gcs_bucket():
     return client.bucket(sec.get("gb_dashboard_bucket", DEFAULT_BUCKET))
 
 
-@st.cache_data(ttl=3600, show_spinner="Cargando datos…")
+@st.cache_data(ttl=3600, show_spinner="Loading data…")
 def load(name: str) -> pd.DataFrame:
     data = gcs_bucket().blob(f"{PREFIX}/{name}.parquet").download_as_bytes()
     df = pd.read_parquet(io.BytesIO(data))
@@ -120,13 +274,15 @@ def load_meta() -> dict:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Utilidades
+# Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 def fmt_num(x: float, dec: int = 0) -> str:
     if x is None or (isinstance(x, float) and np.isnan(x)):
         return "–"
-    s = f"{x:,.{dec}f}"
-    return s.replace(",", "X").replace(".", ",").replace("X", ".")
+    if st.session_state["lang"] == "es":
+        s = f"{x:,.{dec}f}"
+        return s.replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"{x:,.{dec}f}"
 
 
 def fmt_gbp(x: float) -> str:
@@ -141,7 +297,12 @@ def fmt_gbp(x: float) -> str:
 
 
 def month_label(ts: pd.Timestamp) -> str:
-    return f"{MESES[ts.month - 1]} {ts.year}"
+    names = MESES[st.session_state["lang"]]
+    return f"{names[ts.month - 1]} {ts.year}"
+
+
+def val(x, default: str = "–") -> str:
+    return default if x is None or (isinstance(x, float) and np.isnan(x)) or x == "" else str(x)
 
 
 def capacity_mw(row) -> float:
@@ -149,10 +310,6 @@ def capacity_mw(row) -> float:
     dem = abs(row.get("DEMAND_CAPACITY_MW") or 0)
     cap = gen if gen and gen > 0 else dem
     return float(cap) if cap and cap > 0 else np.nan
-
-
-def val(x, default: str = "–") -> str:
-    return default if x is None or (isinstance(x, float) and np.isnan(x)) or x == "" else str(x)
 
 
 def unit_label(row) -> str:
@@ -187,23 +344,23 @@ def layer_stack(df: pd.DataFrame, x: str, height: int = 380, per_mw: float | Non
     fig = go.Figure()
     xs = df[x].map(month_label) if x_is_month else df[x]
     div = per_mw if per_mw and per_mw > 0 else 1.0
-    for col, label, color in LAYERS:
+    for col, label, color in layers():
         if col in df.columns:
             fig.add_bar(x=xs, y=df[col].fillna(0) / div, name=label, marker_color=color,
                         hovertemplate=f"{label}: %{{y:,.0f}}<extra></extra>")
     if "TOTAL_GBP" in df.columns:
-        fig.add_scatter(x=xs, y=df["TOTAL_GBP"].fillna(0) / div, name="Total", mode="markers",
+        fig.add_scatter(x=xs, y=df["TOTAL_GBP"].fillna(0) / div, name=tr("total"), mode="markers",
                         marker=dict(symbol="line-ew", size=18, line=dict(width=3, color=INK)),
-                        hovertemplate="Total: %{y:,.0f}<extra></extra>")
+                        hovertemplate=f"{tr('total')}: %{{y:,.0f}}<extra></extra>")
     return base_layout(fig, height, title)
 
 
 def legend_html() -> str:
-    return '<div class="gb-legend">' + "".join(f'<span><i style="background:{c}"></i>{l}</span>' for _, l, c in LAYERS) + "</div>"
+    return '<div class="gb-legend">' + "".join(f'<span><i style="background:{c}"></i>{l}</span>' for _, l, c in layers()) + "</div>"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Carga y filtros comunes
+# Load common data
 # ──────────────────────────────────────────────────────────────────────────────
 try:
     meta = load_meta()
@@ -211,10 +368,7 @@ try:
     monthly = load("gb_monthly_bmu")
     assets = load("gb_asset_map")
 except Exception as e:  # noqa: BLE001
-    st.error(
-        "No se han podido leer los datos del dashboard. Comprueba que gb_publish.py se ha ejecutado y que las "
-        f"credenciales tienen acceso al bucket. Detalle: {e}"
-    )
+    st.error(tr("load_error", e=e))
     st.stop()
 
 units["CAP_MW"] = units.apply(capacity_mw, axis=1)
@@ -223,23 +377,23 @@ unit_info = units.set_index("BM_UNIT")
 
 months = sorted(monthly["MONTH"].dropna().unique())
 with st.sidebar:
-    st.markdown("### Periodo")
+    lang_name = st.radio("Language / Idioma", list(LANGS.keys()),
+                         index=list(LANGS.values()).index(st.session_state["lang"]), horizontal=True)
+    st.session_state["lang"] = LANGS[lang_name]
+
+    st.markdown(f"### {tr('sidebar_period')}")
     if len(months) > 1:
         m_from, m_to = st.select_slider(
-            "Meses", options=months, value=(months[0], months[-1]), format_func=lambda m: month_label(pd.Timestamp(m)),
-            label_visibility="collapsed",
+            tr("sidebar_months"), options=months, value=(months[0], months[-1]),
+            format_func=lambda m: month_label(pd.Timestamp(m)), label_visibility="collapsed",
         )
     else:
         m_from = m_to = months[0]
         st.write(month_label(pd.Timestamp(m_from)))
     st.markdown(legend_html(), unsafe_allow_html=True)
-    st.caption(
-        f"Datos del {meta.get('min_date')} al {meta.get('max_date')}. Publicado {meta.get('published_utc', '')[:16].replace('T', ' ')} UTC."
-    )
-    st.caption(
-        "Mercado es una estimación (programa físico × precio de mercado). Balance y servicios de NESO son datos "
-        "publicados. Capacidad es la obligación × precio de subasta, sin indexación."
-    )
+    st.caption(tr("sidebar_caption_data", a=meta.get("min_date"), b=meta.get("max_date"),
+               t=meta.get("published_utc", "")[:16].replace("T", " ")))
+    st.caption(tr("sidebar_caption_method"))
 
 m_from, m_to = pd.Timestamp(m_from), pd.Timestamp(m_to)
 mon = monthly[(monthly["MONTH"] >= m_from) & (monthly["MONTH"] <= m_to)].copy()
@@ -258,17 +412,16 @@ def period_by_unit(df: pd.DataFrame) -> pd.DataFrame:
 
 per_unit = period_by_unit(mon)
 
-st.markdown("# Ingresos por activo en Gran Bretaña")
-st.markdown(
-    f'<div class="gb-sub">{month_label(m_from)} a {month_label(m_to)}. Cinco fuentes de ingreso por unidad: '
-    "mercado, balance, frecuencia, reservas y capacidad.</div>",
-    unsafe_allow_html=True,
+st.markdown(f"# {tr('app_title')}")
+st.markdown(f'<div class="gb-sub">{tr("app_sub", a=month_label(m_from), b=month_label(m_to))}</div>',
+           unsafe_allow_html=True)
+
+tab_assets, tab_bess, tab_units, tab_market = st.tabs(
+    [tr("tab_assets"), tr("tab_bess"), tr("tab_units"), tr("tab_market")]
 )
 
-tab_assets, tab_bess, tab_units, tab_market = st.tabs(["Activos Econergy", "Comparativa de baterías", "Buscar unidad", "Mercado"])
-
 # ──────────────────────────────────────────────────────────────────────────────
-# 1) Activos Econergy
+# 1) Econergy assets
 # ──────────────────────────────────────────────────────────────────────────────
 with tab_assets:
     projects = (
@@ -280,15 +433,14 @@ with tab_assets:
     live = projects[projects["BM_UNIT"].isin(per_unit["BM_UNIT"])]
 
     if live.empty:
-        st.info("Ningún activo de la tabla de activos tiene datos en este periodo. Amplía el periodo o revisa gb_asset_map.csv.")
+        st.info(tr("asset_none"))
     else:
-        project = st.selectbox("Activo", live["PROJECT"].tolist(), label_visibility="collapsed")
+        project = st.selectbox(tr("asset_select"), live["PROJECT"].tolist(), label_visibility="collapsed")
         prow = live[live["PROJECT"] == project].iloc[0]
         bmu = prow["BM_UNIT"]
         urow = per_unit[per_unit["BM_UNIT"] == bmu].iloc[0]
         uinfo = unit_info.loc[bmu] if bmu in unit_info.index else pd.Series(dtype=object)
 
-        # Posición frente al resto de baterías
         peers = per_unit[(per_unit["IS_BATTERY"] == True) & (per_unit["CAP_MW"] >= 10) & per_unit["GBP_K_PER_MW_MONTH"].notna()]  # noqa: E712
         rank = int((peers["GBP_K_PER_MW_MONTH"] > urow["GBP_K_PER_MW_MONTH"]).sum()) + 1 if len(peers) else None
 
@@ -297,75 +449,77 @@ with tab_assets:
             st.markdown(f"## {project}")
             st.markdown(
                 f'<div class="gb-figure">£{fmt_num(urow["GBP_K_PER_MW_MONTH"], 1)} k'
-                f'<span class="gb-figure-unit">por MW al mes</span></div>',
+                f'<span class="gb-figure-unit">{tr("per_mw_month")}</span></div>',
                 unsafe_allow_html=True,
             )
             facts = [
-                f"<b>Ingreso del periodo:</b> {fmt_gbp(urow['TOTAL_GBP'])}",
-                f"<b>Posición:</b> {rank} de {len(peers)} baterías de 10 MW o más" if rank else None,
-                f"<b>Sociedad:</b> {val(prow['SPV'])}",
-                f"<b>Unidad Elexon / NESO:</b> {bmu} / {val(prow['NG_BM_UNIT'])}",
-                f"<b>Lead party Elexon:</b> {val(uinfo.get('LEAD_PARTY_NAME'))}",
-                f"<b>Operador en servicios NESO:</b> {val(uinfo.get('EAC_PARTICIPANT'))}",
-                f"<b>Capacidad:</b> {fmt_num(urow['CAP_MW'], 1)} MW",
-                f"<b>Contratos de capacidad:</b> {val(prow['CMU'])}",
+                f"<b>{tr('fact_period_revenue')}:</b> {fmt_gbp(urow['TOTAL_GBP'])}",
+                f"<b>{tr('fact_rank')}:</b> {tr('fact_rank_val', r=rank, n=len(peers))}" if rank else None,
+                f"<b>{tr('fact_spv')}:</b> {val(prow['SPV'])}",
+                f"<b>{tr('fact_units')}:</b> {bmu} / {val(prow['NG_BM_UNIT'])}",
+                f"<b>{tr('fact_lead_party')}:</b> {val(uinfo.get('LEAD_PARTY_NAME'))}",
+                f"<b>{tr('fact_eac_participant')}:</b> {val(uinfo.get('EAC_PARTICIPANT'))}",
+                f"<b>{tr('fact_capacity')}:</b> {fmt_num(urow['CAP_MW'], 1)} MW",
+                f"<b>{tr('fact_cm_contracts')}:</b> {val(prow['CMU'])}",
             ]
             st.markdown('<div class="gb-facts">' + "<br>".join(f for f in facts if f) + "</div>", unsafe_allow_html=True)
 
         with right:
-            per_mw = st.toggle("Ver por MW", value=False, key="asset_per_mw")
+            per_mw = st.toggle(tr("toggle_per_mw"), value=False, key="asset_per_mw")
             asset_m = mon[mon["BM_UNIT"] == bmu].sort_values("MONTH")
             fig = layer_stack(asset_m, "MONTH", height=360, per_mw=urow["CAP_MW"] if per_mw else None, x_is_month=True)
-            fig.update_yaxes(title_text="£ por MW" if per_mw else "£")
+            fig.update_yaxes(title_text=tr("axis_gbp_per_mw") if per_mw else tr("axis_gbp"))
             st.plotly_chart(fig, use_container_width=True)
 
-        st.markdown("### Día a día")
+        st.markdown(f"### {tr('day_by_day')}")
         try:
             daily = load("gb_daily_bmu")
             asset_d = daily[(daily["BM_UNIT"] == bmu) & (daily["DATE"] >= m_from) & (daily["DATE"] < m_to + pd.offsets.MonthBegin(1))]
             st.plotly_chart(layer_stack(asset_d.sort_values("DATE"), "DATE", height=320), use_container_width=True)
         except Exception as e:  # noqa: BLE001
-            st.warning(f"No hay datos diarios disponibles: {e}")
+            st.warning(tr("daily_missing", e=e))
 
-        st.markdown("### Operación en un día")
+        st.markdown(f"### {tr('day_operation')}")
         try:
             sp = load("gb_sp_assets")
             sp_a = sp[sp["BM_UNIT"] == bmu]
             days = sorted(sp_a["DATE"].dt.date.unique())
             if days:
-                day = st.select_slider("Día", options=days, value=days[-1], format_func=lambda d: d.strftime("%d/%m/%Y"))
+                day = st.select_slider(tr("day_slider"), options=days, value=days[-1], format_func=lambda d: d.strftime("%d/%m/%Y"))
                 one = sp_a[sp_a["DATE"].dt.date == day].sort_values("SP")
                 fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08, row_heights=[0.6, 0.4],
-                                    subplot_titles=("Energía por media hora (MWh)", "Servicios de NESO adjudicados (MW)"))
-                fig.add_bar(x=one["SP"], y=one["PN_MWH"], name="Programa (+descarga / −carga)", marker_color="#6F8FAF", row=1, col=1)
-                fig.add_bar(x=one["SP"], y=one["BM_OFFER_MWH"], name="Balance: subir", marker_color="#E3A21A", row=1, col=1)
-                fig.add_bar(x=one["SP"], y=one["BM_BID_MWH"], name="Balance: bajar", marker_color="#B98300", row=1, col=1)
-                fig.add_scatter(x=one["SP"], y=one["RESPONSE_MW"], name="Frecuencia", mode="lines", line=dict(color="#1F9E89", width=2, shape="hv"), row=2, col=1)
-                fig.add_scatter(x=one["SP"], y=one["RESERVE_MW"], name="Reservas", mode="lines", line=dict(color="#6C5BB5", width=2, shape="hv"), row=2, col=1)
+                                    subplot_titles=(tr("chart_energy_hh"), tr("chart_neso_mw")))
+                fig.add_bar(x=one["SP"], y=one["PN_MWH"], name=tr("series_programme"), marker_color="#6F8FAF", row=1, col=1)
+                fig.add_bar(x=one["SP"], y=one["BM_OFFER_MWH"], name=tr("series_bm_up"), marker_color="#E3A21A", row=1, col=1)
+                fig.add_bar(x=one["SP"], y=one["BM_BID_MWH"], name=tr("series_bm_down"), marker_color="#B98300", row=1, col=1)
+                fig.add_scatter(x=one["SP"], y=one["RESPONSE_MW"], name=tr("layer_frequency"), mode="lines",
+                                line=dict(color="#1F9E89", width=2, shape="hv"), row=2, col=1)
+                fig.add_scatter(x=one["SP"], y=one["RESERVE_MW"], name=tr("layer_reserve"), mode="lines",
+                                line=dict(color="#6C5BB5", width=2, shape="hv"), row=2, col=1)
                 base_layout(fig, height=520)
-                fig.update_xaxes(title_text="Periodo de liquidación", row=2, col=1)
+                fig.update_xaxes(title_text=tr("axis_sp"), row=2, col=1)
                 st.plotly_chart(fig, use_container_width=True)
-                st.caption(f"Ingreso del día: {fmt_gbp(one['TOTAL_GBP'].sum())}. "
-                           f"Precio de desvío medio: £{fmt_num(one['SYSTEM_PRICE_GBP_MWH'].mean(), 1)}/MWh.")
+                st.caption(tr("day_summary", t=fmt_gbp(one["TOTAL_GBP"].sum()),
+                             p=fmt_num(one["SYSTEM_PRICE_GBP_MWH"].mean(), 1)))
         except Exception as e:  # noqa: BLE001
-            st.warning(f"No hay detalle por periodo disponible: {e}")
+            st.warning(tr("sp_missing", e=e))
 
-    st.markdown("### Cartera en Gran Bretaña")
+    st.markdown(f"### {tr('portfolio_title')}")
     st.dataframe(
         projects[["PROJECT", "SPV", "STATUS", "CMU", "NG_BM_UNIT", "BM_UNIT", "NOTES"]].rename(columns={
-            "PROJECT": "Proyecto", "SPV": "Sociedad", "STATUS": "Estado", "CMU": "Contratos de capacidad",
-            "NG_BM_UNIT": "Unidad NESO", "BM_UNIT": "Unidad Elexon", "NOTES": "Notas"}),
+            "PROJECT": tr("col_project"), "SPV": tr("col_spv"), "STATUS": tr("col_status"), "CMU": tr("col_cm"),
+            "NG_BM_UNIT": tr("col_neso_unit"), "BM_UNIT": tr("col_elexon_unit"), "NOTES": tr("col_notes")}),
         hide_index=True, use_container_width=True,
     )
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 2) Comparativa de baterías
+# 2) Battery comparison
 # ──────────────────────────────────────────────────────────────────────────────
 with tab_bess:
     c1, c2, c3 = st.columns([1, 1, 2])
-    min_mw = c1.number_input("Capacidad mínima (MW)", min_value=0, max_value=500, value=10, step=5)
-    top_n = c2.number_input("Mostrar las mejores", min_value=5, max_value=100, value=25, step=5)
-    only_bess = c3.toggle("Solo baterías", value=True)
+    min_mw = c1.number_input(tr("filter_min_mw"), min_value=0, max_value=500, value=10, step=5)
+    top_n = c2.number_input(tr("filter_top_n"), min_value=5, max_value=100, value=25, step=5)
+    only_bess = c3.toggle(tr("filter_only_bess"), value=True)
 
     pool = per_unit[(per_unit["CAP_MW"] >= min_mw) & per_unit["GBP_K_PER_MW_MONTH"].notna()]
     if only_bess:
@@ -375,33 +529,36 @@ with tab_bess:
     econ = pool[pool["PROJECT"].notna() & ~pool["BM_UNIT"].isin(top["BM_UNIT"])]
     show = pd.concat([top, econ]).iloc[::-1]
 
-    st.markdown(f"### Ingreso por MW al mes ({len(pool)} unidades)")
+    st.markdown(f"### {tr('chart_gbp_per_mw_month', n=len(pool))}")
     fig = go.Figure()
     ylabels = [f"<b>{l}</b>" if p else l for l, p in zip(show["LABEL"], show["PROJECT"].notna())]
-    for col, label, color in LAYERS:
+    unit_word = "month" if st.session_state["lang"] == "en" else "mes"
+    for col, label, color in layers():
         fig.add_bar(y=ylabels, x=show[f"{col}_PER_MW_MONTH"].fillna(0), name=label, orientation="h", marker_color=color,
-                    hovertemplate=f"{label}: £%{{x:,.2f}} k/MW/mes<extra></extra>")
+                    hovertemplate=f"{label}: £%{{x:,.2f}} k/MW/{unit_word}<extra></extra>")
     base_layout(fig, height=max(360, 22 * len(show) + 80))
     fig.update_layout(hovermode="y unified")
-    fig.update_xaxes(title_text="£ miles por MW al mes", gridcolor=RULE, showgrid=True)
+    axis_x_label = "£ thousand per MW per month" if st.session_state["lang"] == "en" else "£ miles por MW al mes"
+    fig.update_xaxes(title_text=axis_x_label, gridcolor=RULE, showgrid=True)
     st.plotly_chart(fig, use_container_width=True)
-    st.caption("En negrita, activos de la tabla de activos. Si no están entre las mejores, se añaden al final.")
+    st.caption(tr("caption_bold"))
 
     table = pool[["LABEL", "LEAD_PARTY_NAME", "CAP_MW", "GBP_K_PER_MW_MONTH", "TOTAL_GBP"] + LAYER_COLS].rename(columns={
-        "LABEL": "Unidad", "LEAD_PARTY_NAME": "Lead party", "CAP_MW": "MW", "GBP_K_PER_MW_MONTH": "£k/MW/mes",
-        "TOTAL_GBP": "Total £", **{c: l + " £" for c, l, _ in LAYERS}})
+        "LABEL": tr("col_unit"), "LEAD_PARTY_NAME": tr("col_lead_party"), "CAP_MW": tr("col_mw"),
+        "GBP_K_PER_MW_MONTH": tr("col_kgbp_mw_month"), "TOTAL_GBP": tr("col_total_gbp"),
+        **{c: l + " £" for c, l, _ in layers()}})
     st.dataframe(table, hide_index=True, use_container_width=True,
-                 column_config={"MW": st.column_config.NumberColumn(format="%.1f"),
-                                "£k/MW/mes": st.column_config.NumberColumn(format="%.2f"),
-                                **{c: st.column_config.NumberColumn(format="%.0f") for c in table.columns if c.endswith("£")}})
-    st.download_button("Descargar comparativa (CSV)", table.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
-                       file_name="gb_comparativa_baterias.csv", mime="text/csv")
+                column_config={tr("col_mw"): st.column_config.NumberColumn(format="%.1f"),
+                              tr("col_kgbp_mw_month"): st.column_config.NumberColumn(format="%.2f"),
+                              **{c: st.column_config.NumberColumn(format="%.0f") for c in table.columns if c.endswith("£")}})
+    st.download_button(tr("download_comparison"), table.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
+                       file_name="gb_battery_comparison.csv", mime="text/csv")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 3) Buscar unidad
+# 3) Search a unit
 # ──────────────────────────────────────────────────────────────────────────────
 with tab_units:
-    q = st.text_input("Buscar por nombre, titular o código", placeholder="p. ej. Pillswood, Statkraft, T_SGRWO")
+    q = st.text_input(tr("search_label"), placeholder=tr("search_placeholder"))
     cand = per_unit
     if q:
         ql = q.lower()
@@ -413,16 +570,17 @@ with tab_units:
     cand = cand.sort_values("TOTAL_GBP", ascending=False).head(300)
 
     if cand.empty:
-        st.info("Ninguna unidad coincide con la búsqueda en este periodo. Prueba con parte del nombre o del código.")
+        st.info(tr("search_none"))
     else:
-        pick = st.selectbox("Unidad", cand["BM_UNIT"].tolist(), format_func=lambda b: cand.set_index("BM_UNIT").loc[b, "LABEL"])
+        pick = st.selectbox(tr("unit_select"), cand["BM_UNIT"].tolist(),
+                            format_func=lambda b: cand.set_index("BM_UNIT").loc[b, "LABEL"])
         row = cand[cand["BM_UNIT"] == pick].iloc[0]
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Ingreso del periodo", fmt_gbp(row["TOTAL_GBP"]))
-        k2.metric("£ miles por MW al mes", fmt_num(row["GBP_K_PER_MW_MONTH"], 2))
-        k3.metric("Exportado (MWh)", fmt_num(row["EXPORT_MWH"]))
-        k4.metric("Importado (MWh)", fmt_num(row["IMPORT_MWH"]))
-        st.caption(f"Lead party: {val(row['LEAD_PARTY_NAME'])}. Tecnología: {val(row['FUEL_TYPE'])}. Capacidad: {fmt_num(row['CAP_MW'], 1)} MW.")
+        k1.metric(tr("metric_revenue"), fmt_gbp(row["TOTAL_GBP"]))
+        k2.metric(tr("metric_kgbp_mw"), fmt_num(row["GBP_K_PER_MW_MONTH"], 2))
+        k3.metric(tr("metric_export"), fmt_num(row["EXPORT_MWH"]))
+        k4.metric(tr("metric_import"), fmt_num(row["IMPORT_MWH"]))
+        st.caption(tr("unit_caption", lp=val(row["LEAD_PARTY_NAME"]), ft=val(row["FUEL_TYPE"]), mw=fmt_num(row["CAP_MW"], 1)))
 
         um = mon[mon["BM_UNIT"] == pick].sort_values("MONTH")
         st.plotly_chart(layer_stack(um, "MONTH", height=340, x_is_month=True), use_container_width=True)
@@ -435,53 +593,53 @@ with tab_units:
         except Exception:  # noqa: BLE001
             pass
 
-        export = um.assign(MES=um["MONTH"].map(month_label))[["MES", "EXPORT_MWH", "IMPORT_MWH", "BM_OFFER_MWH", "BM_BID_MWH", "TOTAL_GBP"] + LAYER_COLS]
-        st.download_button("Descargar meses (CSV)", export.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
-                           file_name=f"gb_{pick}_mensual.csv", mime="text/csv")
+        export = um.assign(MONTH_LABEL=um["MONTH"].map(month_label))[
+            ["MONTH_LABEL", "EXPORT_MWH", "IMPORT_MWH", "BM_OFFER_MWH", "BM_BID_MWH", "TOTAL_GBP"] + LAYER_COLS]
+        st.download_button(tr("download_months"), export.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
+                           file_name=f"gb_{pick}_monthly.csv", mime="text/csv")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 4) Mercado
+# 4) Market
 # ──────────────────────────────────────────────────────────────────────────────
 with tab_market:
     try:
         mkt = load("gb_market_daily").sort_values("DATE")
         mkt = mkt[(mkt["DATE"] >= m_from) & (mkt["DATE"] < m_to + pd.offsets.MonthBegin(1))]
 
-        st.markdown("### Precios diarios")
+        st.markdown(f"### {tr('market_prices')}")
         fig = go.Figure()
         fig.add_scatter(x=mkt["DATE"], y=mkt["SYSTEM_PRICE_MAX"], mode="lines", line=dict(width=0), showlegend=False, hoverinfo="skip")
         fig.add_scatter(x=mkt["DATE"], y=mkt["SYSTEM_PRICE_MIN"], mode="lines", line=dict(width=0), fill="tonexty",
-                        fillcolor="rgba(227,162,26,0.18)", name="Desvío: rango del día")
-        fig.add_scatter(x=mkt["DATE"], y=mkt["SYSTEM_PRICE_AVG"], mode="lines", line=dict(color="#E3A21A", width=2), name="Desvío: media")
-        fig.add_scatter(x=mkt["DATE"], y=mkt["MID_GBP_MWH"], mode="lines", line=dict(color=INK, width=2), name="Mercado (MID)")
+                        fillcolor="rgba(227,162,26,0.18)", name=tr("market_band"))
+        fig.add_scatter(x=mkt["DATE"], y=mkt["SYSTEM_PRICE_AVG"], mode="lines", line=dict(color="#E3A21A", width=2), name=tr("market_avg"))
+        fig.add_scatter(x=mkt["DATE"], y=mkt["MID_GBP_MWH"], mode="lines", line=dict(color=INK, width=2), name=tr("market_mid"))
         base_layout(fig, height=360)
-        fig.update_yaxes(title_text="£/MWh")
+        fig.update_yaxes(title_text=tr("axis_gbp_mwh"))
         st.plotly_chart(fig, use_container_width=True)
 
-        st.markdown("### Pagos diarios del operador")
+        st.markdown(f"### {tr('market_payments')}")
         fig = go.Figure()
-        fig.add_bar(x=mkt["DATE"], y=mkt["BM_TOTAL_GBP"], name="Balance", marker_color="#E3A21A")
-        fig.add_bar(x=mkt["DATE"], y=mkt["NESO_SERVICES_GBP"], name="Frecuencia y reservas", marker_color="#1F9E89")
+        fig.add_bar(x=mkt["DATE"], y=mkt["BM_TOTAL_GBP"], name=tr("layer_balancing"), marker_color="#E3A21A")
+        fig.add_bar(x=mkt["DATE"], y=mkt["NESO_SERVICES_GBP"], name=tr("series_freq_reserve"), marker_color="#1F9E89")
         base_layout(fig, height=320)
         fig.update_layout(barmode="group")
-        fig.update_yaxes(title_text="£")
+        fig.update_yaxes(title_text=tr("axis_gbp"))
         st.plotly_chart(fig, use_container_width=True)
-        st.caption("Solo unidades registradas en Elexon. Las unidades agregadas que solo venden servicios a NESO no están incluidas.")
+        st.caption(tr("market_caption"))
 
         eac = load("gb_eac_prices_daily")
         eac = eac[(eac["DATE"] >= m_from) & (eac["DATE"] < m_to + pd.offsets.MonthBegin(1))]
-        st.markdown("### Precio de los servicios de NESO")
+        st.markdown(f"### {tr('eac_price_title')}")
         products = sorted(eac["PRODUCT"].dropna().unique())
         default = [p for p in ["DCH", "DCL", "DMH", "DML", "DRH", "DRL"] if p in products]
-        chosen = st.multiselect("Productos", products, default=default or products[:4])
+        chosen = st.multiselect(tr("eac_products"), products, default=default or products[:4])
         fig = go.Figure()
         for p in chosen:
             s = eac[eac["PRODUCT"] == p].sort_values("DATE")
             fig.add_scatter(x=s["DATE"], y=s["PRICE_GBP_MW_H"], mode="lines", name=p)
         base_layout(fig, height=340)
-        fig.update_yaxes(title_text="£ por MW y hora")
+        fig.update_yaxes(title_text=tr("axis_gbp_mw_h"))
         st.plotly_chart(fig, use_container_width=True)
-        st.caption("Precio medio ponderado por MW adjudicados. D = dinámicos (C contención, M moderación, R regulación; H subir, L bajar). "
-                   "BR, QR, SR = reservas de balance, rápida y lenta (P subir, N bajar).")
+        st.caption(tr("eac_caption"))
     except Exception as e:  # noqa: BLE001
-        st.warning(f"No hay datos de mercado disponibles: {e}")
+        st.warning(tr("market_missing", e=e))
