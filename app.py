@@ -30,6 +30,52 @@ st.set_page_config(page_title="GB asset revenue", page_icon="⚡", layout="wide"
 DEFAULT_BUCKET = "miguel-energia-gb-dashboard"
 PREFIX = "gb"
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Password gate
+#   Requires a "dashboard_password" entry in st.secrets (Streamlit Cloud: App -> Settings ->
+#   Secrets; local: dashboard_gb/.streamlit/secrets.toml, gitignored). If the secret is not
+#   set, the app runs without a password (so local development keeps working).
+# ──────────────────────────────────────────────────────────────────────────────
+def check_password() -> bool:
+    try:
+        real_password = st.secrets["dashboard_password"]
+    except Exception:  # noqa: BLE001
+        return True  # no password configured: open access (e.g. local dev)
+
+    if st.session_state.get("password_ok"):
+        return True
+
+    st.markdown(
+        """
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..125,400..800&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+html, body, [class*="css"] { font-family: "IBM Plex Sans", system-ui, sans-serif; }
+.stApp { background: #EEF2F5; }
+</style>
+""",
+        unsafe_allow_html=True,
+    )
+    _, mid, _ = st.columns([1, 1.2, 1])
+    with mid:
+        st.markdown(
+            '<h2 style="font-family:Archivo,sans-serif;font-stretch:87.5%;color:#14212E;margin-top:3rem;">'
+            "GB asset revenue / Ingresos por activo en GB</h2>",
+            unsafe_allow_html=True,
+        )
+        pwd = st.text_input("Password / Contraseña", type="password", key="pwd_input")
+        if pwd:
+            if pwd == real_password:
+                st.session_state["password_ok"] = True
+                st.rerun()
+            else:
+                st.error("Incorrect password / Contraseña incorrecta")
+    return False
+
+
+if not check_password():
+    st.stop()
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Language
 # ──────────────────────────────────────────────────────────────────────────────
