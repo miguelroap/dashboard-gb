@@ -207,6 +207,51 @@ T = {
         "regulación; H subir, L bajar). BR, QR, SR = reservas de balance, rápida y lenta (P subir, N bajar).",
     },
     "market_missing": {"en": "No market data available: {e}", "es": "No hay datos de mercado disponibles: {e}"},
+    "tab_tech": {"en": "By technology", "es": "Por tecnología"},
+    "tab_owner": {"en": "By owner", "es": "Por propietario"},
+    "tech_battery": {"en": "Battery storage", "es": "Almacenamiento (baterías)"},
+    "tech_wind": {"en": "Wind", "es": "Eólica"},
+    "tech_solar": {"en": "Solar", "es": "Solar"},
+    "tech_ccgt": {"en": "Gas (CCGT)", "es": "Gas (ciclo combinado)"},
+    "tech_ocgt": {"en": "Gas (OCGT / peaking)", "es": "Gas (turbina abierta)"},
+    "tech_recip_engine": {"en": "Reciprocating engines", "es": "Motores alternativos"},
+    "tech_coal": {"en": "Coal", "es": "Carbón"},
+    "tech_oil": {"en": "Oil", "es": "Fuel-oil"},
+    "tech_nuclear": {"en": "Nuclear", "es": "Nuclear"},
+    "tech_hydro": {"en": "Hydro", "es": "Hidráulica"},
+    "tech_pumped_storage": {"en": "Pumped storage", "es": "Bombeo"},
+    "tech_biomass": {"en": "Biomass", "es": "Biomasa"},
+    "tech_chp": {"en": "CHP", "es": "Cogeneración"},
+    "tech_dsr": {"en": "Demand response", "es": "Gestión de demanda"},
+    "tech_interconnector": {"en": "Interconnector", "es": "Interconector"},
+    "tech_other": {"en": "Other", "es": "Otras"},
+    "tech_unclassified": {"en": "Unclassified", "es": "Sin clasificar"},
+    "toggle_incl_wholesale": {"en": "Include wholesale (estimate)", "es": "Incluir mercado (estimado)"},
+    "toggle_per_mw_view": {"en": "Show £/MW/month instead of total £", "es": "Ver £/MW/mes en vez de £ total"},
+    "tech_chart_title": {"en": "Revenue by technology ({n} units)", "es": "Ingreso por tecnología ({n} unidades)"},
+    "tech_caption": {
+        "en": "Wholesale is a rough estimate and scales with volume, so it can dwarf the other layers for large "
+        "generators. Turn it off to compare balancing, frequency, reserve and capacity revenue instead.",
+        "es": "Mercado es una estimación aproximada y escala con el volumen, por lo que puede dominar a las demás "
+        "capas en generadores grandes. Desactívalo para comparar solo balance, frecuencia, reservas y capacidad.",
+    },
+    "col_technology": {"en": "Technology", "es": "Tecnología"},
+    "col_n_units": {"en": "Units", "es": "Unidades"},
+    "col_total_mw": {"en": "Total MW", "es": "MW totales"},
+    "owner_search_label": {"en": "Search owner / market agent", "es": "Buscar propietario / agente de mercado"},
+    "owner_search_placeholder": {"en": "e.g. EDF, BP, Statkraft", "es": "p. ej. EDF, BP, Statkraft"},
+    "owner_chart_title": {"en": "Top owners by revenue ({n} in total)", "es": "Principales propietarios por ingreso ({n} en total)"},
+    "owner_top_n": {"en": "Show top", "es": "Mostrar los primeros"},
+    "col_owner": {"en": "Owner / market agent", "es": "Propietario / agente de mercado"},
+    "owner_detail_select": {"en": "Owner", "es": "Propietario"},
+    "owner_units_title": {"en": "Units for this owner", "es": "Unidades de este propietario"},
+    "owner_caption": {
+        "en": "\"Owner\" is the Lead Party registered in Elexon for each BM Unit — the market agent responsible "
+        "for it, which is not always the asset's ultimate owner (e.g. a third-party optimiser or aggregator).",
+        "es": "\"Propietario\" es el Lead Party registrado en Elexon de cada BM Unit: el agente de mercado "
+        "responsable de ella, que no siempre coincide con el dueño último del activo (p. ej. un optimizador o "
+        "agregador externo).",
+    },
     "load_error": {
         "en": "Could not read the dashboard data. Check that gb_publish.py has run and that the credentials "
         "have access to the bucket. Detail: {e}",
@@ -368,6 +413,54 @@ def unit_label(row) -> str:
     return str(code)
 
 
+# Elexon fuel-type codes -> internal technology key. Anything starting with "INT" is an interconnector
+# (INTFR, INTIRL, INTNED, INTEW, INTNSL, INTVKL, INTIFA2, INTNEM...); not all are listed individually.
+_FUEL_TECH_MAP = {
+    "CCGT": "ccgt", "OCGT": "ocgt", "COAL": "coal", "OIL": "oil", "NUCLEAR": "nuclear",
+    "WIND": "wind", "PS": "pumped_storage", "NPSHYD": "hydro", "BIOMASS": "biomass",
+}
+
+
+def classify_tech(row) -> str:
+    """Best-effort technology classification. FUEL_TYPE (Elexon) is often null for embedded/aggregator
+    units, so this falls back to the NESO EAC technology text, then to 'unclassified'. IS_BATTERY (built
+    from the asset map and NESO participation) takes priority: batteries are frequently tagged FUEL_TYPE
+    OTHER by Elexon, which would otherwise hide them among generic 'Other' units."""
+    if row.get("IS_BATTERY"):
+        return "battery"
+    if val(row.get("INTERCONNECTOR_ID"), "") != "":
+        return "interconnector"
+    fuel = row.get("FUEL_TYPE")
+    if isinstance(fuel, str) and fuel:
+        if fuel.startswith("INT"):
+            return "interconnector"
+        return _FUEL_TECH_MAP.get(fuel, "other")
+    eac = str(row.get("EAC_TECHNOLOGY") or "").lower()
+    if "batter" in eac:
+        return "battery"
+    if "wind" in eac:
+        return "wind"
+    if "solar" in eac or " pv" in eac:
+        return "solar"
+    if "hydro" in eac:
+        return "hydro"
+    if "pump" in eac:
+        return "pumped_storage"
+    if "diesel" in eac or "engine" in eac or "reciprocat" in eac:
+        return "recip_engine"
+    if "chp" in eac:
+        return "chp"
+    if "dsr" in eac or "demand" in eac:
+        return "dsr"
+    if "nuclear" in eac:
+        return "nuclear"
+    if "ccgt" in eac or ("gas" in eac and "storage" not in eac):
+        return "ccgt"
+    if eac:
+        return "other"
+    return "unclassified"
+
+
 def base_layout(fig: go.Figure, height: int = 380, title: str | None = None) -> go.Figure:
     fig.update_layout(
         height=height,
@@ -419,6 +512,7 @@ except Exception as e:  # noqa: BLE001
 
 units["CAP_MW"] = units.apply(capacity_mw, axis=1)
 units["LABEL"] = units.apply(unit_label, axis=1)
+units["TECH_GROUP"] = units.apply(classify_tech, axis=1)
 unit_info = units.set_index("BM_UNIT")
 
 months = sorted(monthly["MONTH"].dropna().unique())
@@ -447,10 +541,12 @@ mon = monthly[(monthly["MONTH"] >= m_from) & (monthly["MONTH"] <= m_to)].copy()
 
 def period_by_unit(df: pd.DataFrame) -> pd.DataFrame:
     agg = df.groupby("BM_UNIT", as_index=False)[LAYER_COLS + ["TOTAL_GBP", "EXPORT_MWH", "IMPORT_MWH", "DAYS"]].sum()
+    agg["NO_WHOLESALE_GBP"] = agg["TOTAL_GBP"] - agg["WHOLESALE_GBP"].fillna(0)
     agg = agg.merge(units[["BM_UNIT", "LABEL", "CAP_MW", "LEAD_PARTY_NAME", "IS_BATTERY", "PROJECT", "OWNER_GROUP",
-                           "BM_UNIT_NAME", "NG_BM_UNIT", "FUEL_TYPE"]], on="BM_UNIT", how="left")
+                           "BM_UNIT_NAME", "NG_BM_UNIT", "FUEL_TYPE", "TECH_GROUP"]], on="BM_UNIT", how="left")
     months_eq = agg["DAYS"].replace(0, np.nan) / 30.4
     agg["GBP_K_PER_MW_MONTH"] = agg["TOTAL_GBP"] / agg["CAP_MW"] / months_eq / 1000
+    agg["NO_WHOLESALE_K_PER_MW_MONTH"] = agg["NO_WHOLESALE_GBP"] / agg["CAP_MW"] / months_eq / 1000
     for col in LAYER_COLS:
         agg[f"{col}_PER_MW_MONTH"] = agg[col] / agg["CAP_MW"] / months_eq / 1000
     return agg
@@ -462,8 +558,8 @@ st.markdown(f"# {tr('app_title')}")
 st.markdown(f'<div class="gb-sub">{tr("app_sub", a=month_label(m_from), b=month_label(m_to))}</div>',
            unsafe_allow_html=True)
 
-tab_assets, tab_bess, tab_units, tab_market = st.tabs(
-    [tr("tab_assets"), tr("tab_bess"), tr("tab_units"), tr("tab_market")]
+tab_assets, tab_bess, tab_tech, tab_owner, tab_units, tab_market = st.tabs(
+    [tr("tab_assets"), tr("tab_bess"), tr("tab_tech"), tr("tab_owner"), tr("tab_units"), tr("tab_market")]
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -601,7 +697,109 @@ with tab_bess:
                        file_name="gb_battery_comparison.csv", mime="text/csv")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 3) Search a unit
+# 3) By technology
+# ──────────────────────────────────────────────────────────────────────────────
+with tab_tech:
+    all_units = period_by_unit(mon)  # unfiltered: every unit with any activity in the period, not just batteries
+
+    t1, t2 = st.columns([1, 1])
+    incl_wholesale_tech = t1.toggle(tr("toggle_incl_wholesale"), value=False, key="tech_incl_wholesale")
+    per_mw_tech = t2.toggle(tr("toggle_per_mw_view"), value=True, key="tech_per_mw")
+    metric_col = "TOTAL_GBP" if incl_wholesale_tech else "NO_WHOLESALE_GBP"
+
+    tech_agg = all_units.groupby("TECH_GROUP", as_index=False).agg(
+        N_UNITS=("BM_UNIT", "count"), CAP_MW=("CAP_MW", "sum"),
+        **{c: (c, "sum") for c in LAYER_COLS}, TOTAL_GBP=("TOTAL_GBP", "sum"),
+        NO_WHOLESALE_GBP=("NO_WHOLESALE_GBP", "sum"),
+    )
+    tech_agg["TECH_LABEL"] = tech_agg["TECH_GROUP"].map(lambda k: tr(f"tech_{k}"))
+    months_span = max(1.0, (m_to - m_from).days / 30.4 + 1)
+    if per_mw_tech:
+        for col in LAYER_COLS:
+            tech_agg[col] = tech_agg[col] / tech_agg["CAP_MW"].replace(0, np.nan) / months_span / 1000
+        tech_agg["METRIC"] = tech_agg[metric_col] / tech_agg["CAP_MW"].replace(0, np.nan) / months_span / 1000
+    else:
+        tech_agg["METRIC"] = tech_agg[metric_col]
+    tech_agg = tech_agg.sort_values("METRIC", ascending=True)
+
+    st.markdown(f"### {tr('tech_chart_title', n=len(all_units))}")
+    fig = go.Figure()
+    for col, label, color in layers():
+        if not incl_wholesale_tech and col == "WHOLESALE_GBP":
+            continue
+        fig.add_bar(y=tech_agg["TECH_LABEL"], x=tech_agg[col].fillna(0), name=label, orientation="h", marker_color=color)
+    base_layout(fig, height=max(320, 34 * len(tech_agg) + 80))
+    fig.update_layout(hovermode="y unified")
+    fig.update_xaxes(title_text=(("£k/MW/" + ("month" if st.session_state["lang"] == "en" else "mes"))
+                                 if per_mw_tech else tr("axis_gbp")), gridcolor=RULE, showgrid=True)
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption(tr("tech_caption"))
+
+    tech_table = tech_agg.sort_values("METRIC", ascending=False)[
+        ["TECH_LABEL", "N_UNITS", "CAP_MW", "TOTAL_GBP"] + LAYER_COLS].rename(columns={
+        "TECH_LABEL": tr("col_technology"), "N_UNITS": tr("col_n_units"), "CAP_MW": tr("col_total_mw"),
+        "TOTAL_GBP": tr("col_total_gbp"), **{c: l + " £" for c, l, _ in layers()}})
+    st.dataframe(tech_table, hide_index=True, use_container_width=True,
+                column_config={tr("col_total_mw"): st.column_config.NumberColumn(format="%.0f"),
+                              **{c: st.column_config.NumberColumn(format="%.0f") for c in tech_table.columns if c.endswith("£")}})
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 4) By owner / market agent
+# ──────────────────────────────────────────────────────────────────────────────
+with tab_owner:
+    st.caption(tr("owner_caption"))
+    all_units = period_by_unit(mon)
+
+    o1, o2, o3 = st.columns([1.4, 1, 1])
+    q_owner = o1.text_input(tr("owner_search_label"), placeholder=tr("owner_search_placeholder"))
+    top_n_owner = o2.number_input(tr("owner_top_n"), min_value=5, max_value=100, value=20, step=5, key="owner_top_n")
+    incl_wholesale_owner = o3.toggle(tr("toggle_incl_wholesale"), value=True, key="owner_incl_wholesale")
+    owner_metric = "TOTAL_GBP" if incl_wholesale_owner else "NO_WHOLESALE_GBP"
+
+    owner_agg = all_units.groupby("LEAD_PARTY_NAME", as_index=False).agg(
+        N_UNITS=("BM_UNIT", "count"), CAP_MW=("CAP_MW", "sum"),
+        **{c: (c, "sum") for c in LAYER_COLS}, TOTAL_GBP=("TOTAL_GBP", "sum"),
+        NO_WHOLESALE_GBP=("NO_WHOLESALE_GBP", "sum"),
+    )
+    owner_agg = owner_agg[owner_agg["LEAD_PARTY_NAME"].notna()]
+    if q_owner:
+        owner_agg = owner_agg[owner_agg["LEAD_PARTY_NAME"].str.lower().str.contains(q_owner.lower(), na=False)]
+    owner_agg = owner_agg.sort_values(owner_metric, ascending=False)
+    owner_top = owner_agg.head(int(top_n_owner)).sort_values(owner_metric, ascending=True)
+
+    st.markdown(f"### {tr('owner_chart_title', n=len(owner_agg))}")
+    fig = go.Figure()
+    for col, label, color in layers():
+        if not incl_wholesale_owner and col == "WHOLESALE_GBP":
+            continue
+        fig.add_bar(y=owner_top["LEAD_PARTY_NAME"], x=owner_top[col].fillna(0), name=label, orientation="h", marker_color=color)
+    base_layout(fig, height=max(320, 26 * len(owner_top) + 80))
+    fig.update_layout(hovermode="y unified")
+    fig.update_xaxes(title_text=tr("axis_gbp"), gridcolor=RULE, showgrid=True)
+    st.plotly_chart(fig, use_container_width=True)
+
+    owner_table = owner_agg[["LEAD_PARTY_NAME", "N_UNITS", "CAP_MW", "TOTAL_GBP"] + LAYER_COLS].rename(columns={
+        "LEAD_PARTY_NAME": tr("col_owner"), "N_UNITS": tr("col_n_units"), "CAP_MW": tr("col_total_mw"),
+        "TOTAL_GBP": tr("col_total_gbp"), **{c: l + " £" for c, l, _ in layers()}})
+    st.dataframe(owner_table, hide_index=True, use_container_width=True,
+                column_config={tr("col_total_mw"): st.column_config.NumberColumn(format="%.0f"),
+                              **{c: st.column_config.NumberColumn(format="%.0f") for c in owner_table.columns if c.endswith("£")}})
+
+    if len(owner_agg):
+        st.markdown(f"### {tr('owner_units_title')}")
+        owner_pick = st.selectbox(tr("owner_detail_select"), owner_agg["LEAD_PARTY_NAME"].tolist())
+        units_of_owner = all_units[all_units["LEAD_PARTY_NAME"] == owner_pick].sort_values("TOTAL_GBP", ascending=False)
+        units_of_owner_tbl = units_of_owner[["LABEL", "TECH_GROUP", "CAP_MW", "TOTAL_GBP"] + LAYER_COLS].copy()
+        units_of_owner_tbl["TECH_GROUP"] = units_of_owner_tbl["TECH_GROUP"].map(lambda k: tr(f"tech_{k}"))
+        units_of_owner_tbl = units_of_owner_tbl.rename(columns={
+            "LABEL": tr("col_unit"), "TECH_GROUP": tr("col_technology"), "CAP_MW": tr("col_mw"),
+            "TOTAL_GBP": tr("col_total_gbp"), **{c: l + " £" for c, l, _ in layers()}})
+        st.dataframe(units_of_owner_tbl, hide_index=True, use_container_width=True,
+                    column_config={tr("col_mw"): st.column_config.NumberColumn(format="%.1f"),
+                                  **{c: st.column_config.NumberColumn(format="%.0f") for c in units_of_owner_tbl.columns if c.endswith("£")}})
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 5) Search a unit
 # ──────────────────────────────────────────────────────────────────────────────
 with tab_units:
     q = st.text_input(tr("search_label"), placeholder=tr("search_placeholder"))
@@ -645,7 +843,7 @@ with tab_units:
                            file_name=f"gb_{pick}_monthly.csv", mime="text/csv")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 4) Market
+# 6) Market
 # ──────────────────────────────────────────────────────────────────────────────
 with tab_market:
     try:
